@@ -5,12 +5,12 @@
 MODULE_LICENSE("GPL");
 
 static int __init snout_init(void) {
-  pr_debug("snout init\n");
+  pr_info("snout init\n");
   return 0;
 }
 
 static void __exit snout_exit(void) {
-  pr_debug("snout exit\n");
+  pr_info("snout exit\n");
   return;
 }
 
