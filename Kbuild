@@ -1,2 +1,2 @@
 EXTRA_CFLAGS = -Wall -g
-obj-m        = src/main.o
+obj-m        = src/snout.o
