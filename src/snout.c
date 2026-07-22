@@ -39,14 +39,14 @@ static bool get_packet_payload(struct sk_buff *skb, void *dest_buffer, int max_l
             return false;
         }
 
-        payload_offset = transport_offset + (tcph->doff * 4)
+        payload_offset = transport_offset + (tcph->doff * 4);
     } else if (iph->protocol == IPPROTO_UDP) {
         payload_offset = transport_offset + sizeof(struct udphdr);
     } else {
         return false;
     }
 
-    if(pyalod_offset >= total_len) {
+    if(payload_offset >= total_len) {
         return false;
     }
 
