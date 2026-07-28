@@ -29,7 +29,7 @@ static bool get_packet_payload(struct sk_buff *skb, void *dest_buffer,
     return false;
   }
 
-  transport_offset = skb_network_offset(skb);
+  transport_offset = net_offset + (iph->ihl * 4);
 
   if (iph->protocol == IPPROTO_TCP) {
     struct tcphdr _tcph;
@@ -73,7 +73,6 @@ static unsigned int netfilter_hook(void *priv, struct sk_buff *skb,
                          &bytes_copied)) {
     pr_info("Successfully grabbed %d bytes of payload!\n", bytes_copied);
   }
-
   return NF_ACCEPT;
 }
 
