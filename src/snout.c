@@ -1,7 +1,12 @@
+#include "asm-generic/int-ll64.h"
+#include "linux/compiler_attributes.h"
+#include "linux/spinlock_types.h"
+#include "ring.h"
 #include <linux/init.h>
 #include <linux/ip.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv4.h>
 #include <linux/printk.h>
@@ -13,7 +18,12 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Nadev");
 MODULE_DESCRIPTION("A packet sniffer kernel module");
 
+int ring_size = 65535;
+module_param(ring_size, int, 0);
+
 static struct nf_hook_ops nfho;
+
+static void capture_packet(struct sk_buff *skb) {}
 
 static bool get_packet_payload(struct sk_buff *skb, void *dest_buffer,
                                int max_len, int *bytes_copied) {

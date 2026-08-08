@@ -1,17 +1,13 @@
 #include "ring.h"
-#include "asm-generic/bug.h"
-#include "linux/spinlock.h"
-#include <linux/string.h>
-#include <stddef.h>
 
-static struct ring *ring_init(size_t size) {
-  struct ring *ring = vcalloc(1, sizeof(*ring));
+struct ring *ring_init(size_t size) {
+  struct ring *ring = kzalloc(sizeof(*ring), GFP_KERNEL);
   if (!ring) {
     return NULL;
   }
-  ring->buf = vmalloc(size);
+  ring->buf = kvzalloc(size, GFP_KERNEL);
   if (!ring->buf) {
-    vfree(ring);
+    kfree(ring);
     return NULL;
   }
   ring->size = size;
@@ -19,9 +15,9 @@ static struct ring *ring_init(size_t size) {
   return ring;
 };
 
-static void ring_destroy(struct ring *ring) {
-  vfree(ring->buf);
-  vfree(ring);
+void ring_destroy(struct ring *ring) {
+  kvfree(ring->buf);
+  kfree(ring);
 };
 
 static size_t ring_space(struct ring *ring) {
@@ -49,6 +45,16 @@ static size_t ring_put(struct ring *ring, const u8 *data, size_t len) {
   return len;
 }
 
-// static char ring_write_record(struct ring *ring) {};
-// static char ring_read(struct ring *ring) {};
-// static char ring_reset(struct ring *ring) {};
+int ring_write_record(struct ring *ring, const void *hdr, size_t hdr_len,
+                      const void *payload, size_t payload_len) {
+  size_t total = hdr_len + payload_len;
+  if (total > ring_space(ring)) {
+    ring->dropped++;
+    return -ENOSPC;
+  }
+  ring_put(ring, hdr, hdr_len);
+  ring_put(ring, payload, payload_len);
+  return 0;
+};
+//  char ring_read(struct ring *ring) {};
+//  char ring_reset(struct ring *ring) {};

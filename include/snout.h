@@ -1,6 +1,7 @@
 #ifndef SNOUT
 #define SNOUT
-#include "linux/types.h"
+#include <linux/byteorder/little_endian.h>
+#include <linux/types.h>
 
 struct pcap_global_hdr {
   __le32 magic_number;
