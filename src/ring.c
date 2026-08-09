@@ -1,5 +1,4 @@
 #include "ring.h"
-#include <stddef.h>
 
 struct ring *ring_init(size_t size) {
   struct ring *ring = kzalloc(sizeof(*ring), GFP_KERNEL);

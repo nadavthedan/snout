@@ -1,7 +1,9 @@
+#include "asm-generic/errno-base.h"
 #include "asm-generic/int-ll64.h"
 #include "linux/compiler_attributes.h"
 #include "linux/spinlock_types.h"
 #include "ring.h"
+#include "snout.h"
 #include <linux/init.h>
 #include <linux/ip.h>
 #include <linux/kernel.h>
@@ -18,8 +20,13 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Nadev");
 MODULE_DESCRIPTION("A packet sniffer kernel module");
 
-int ring_size = 65535;
+int ring_size = 1 << 20;
 module_param(ring_size, int, 0);
+
+int snaplen = 65535;
+module_param(snaplen, int, 0);
+
+static struct ring *snout_ring;
 
 static struct nf_hook_ops nfho;
 
@@ -87,12 +94,39 @@ static unsigned int netfilter_hook(void *priv, struct sk_buff *skb,
 }
 
 static int __init snout_init(void) {
+  int err;
+
+  // params validation
+  if (ring_size < 4096) {
+    pr_err("snount: ring_size %d too small (min 4096)\n", ring_size);
+    return -EINVAL;
+  }
+  if (snaplen < 0 || snaplen > 65535) {
+    pr_err("snount: snaplen %d out of range\n", snaplen);
+    return -EINVAL;
+  }
+  if (snaplen > ring_size - (int)sizeof(struct pcap_packet_hdr) - 1) {
+    pr_err("snount: snaplen %d exceeds ring capacity\n", snaplen);
+    return -EINVAL;
+  }
+
+  snout_ring = ring_init(ring_size);
+  if (!snout_ring) {
+    pr_err("snount: ring failed allocation\n");
+    return -ENOMEM;
+  }
+
   nfho.hook = netfilter_hook;
   nfho.hooknum = NF_INET_PRE_ROUTING;
   nfho.pf = PF_INET;
   nfho.priority = NF_IP_PRI_FIRST;
 
-  nf_register_net_hook(&init_net, &nfho);
+  err = nf_register_net_hook(&init_net, &nfho);
+  if (err < 0) {
+    pr_err("snount: nf_register_net_hook failed: %d\n", err);
+    ring_destroy(snout_ring);
+    return err;
+  }
 
   pr_info("snount init success\n");
   return 0;
@@ -100,6 +134,8 @@ static int __init snout_init(void) {
 
 static void __exit snout_exit(void) {
   nf_unregister_net_hook(&init_net, &nfho);
+
+  ring_destroy(snout_ring);
 
   pr_info("snount exit success\n");
   return;
