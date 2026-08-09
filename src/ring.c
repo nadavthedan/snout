@@ -1,4 +1,5 @@
 #include "ring.h"
+#include <stddef.h>
 
 struct ring *ring_init(size_t size) {
   struct ring *ring = kzalloc(sizeof(*ring), GFP_KERNEL);
@@ -56,5 +57,24 @@ int ring_write_record(struct ring *ring, const void *hdr, size_t hdr_len,
   ring_put(ring, payload, payload_len);
   return 0;
 };
-//  char ring_read(struct ring *ring) {};
-//  char ring_reset(struct ring *ring) {};
+
+size_t ring_read(struct ring *ring, u8 *buf, size_t len) {
+  size_t available, read_size, first, pos;
+  available = ring_available(ring);
+  if (!available) {
+    return 0;
+  }
+  read_size = min(len, available);
+  pos = ring->tail % ring->size;
+  first = min(read_size, ring->size - pos);
+  memcpy(buf, ring->buf + pos, first);
+  memcpy(buf + first, ring->buf, read_size - first);
+  ring->tail += read_size;
+  return read_size;
+};
+
+void ring_reset(struct ring *ring) {
+  ring->head = 0;
+  ring->tail = 0;
+  ring->dropped = 0;
+};

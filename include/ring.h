@@ -22,11 +22,8 @@ struct ring {
 
 struct ring *ring_init(size_t size);
 void ring_destroy(struct ring *ring);
-static size_t ring_space(struct ring *ring);
-static size_t ring_available(struct ring *ring);
-static size_t ring_put(struct ring *ring, const u8 *data, size_t len);
 int ring_write_record(struct ring *ring, const void *hdr, size_t hdr_len,
                       const void *payload, size_t payload_len);
-//  char ring_read(struct ring *ring);
-//  char ring_reset(struct ring *ring);
+size_t ring_read(struct ring *ring, u8 *buf, size_t len);
+void ring_reset(struct ring *ring);
 #endif
