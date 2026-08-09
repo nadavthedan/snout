@@ -1,3 +1,3 @@
-EXTRA_CFLAGS = -Wall -g
-ccflags-y   += -I$(src)/include
-obj-m        = src/snout.o src/ring.o
+ccflags-y   += -I$(src)/include -g
+obj-m        = src/snout.o
+src/snout-objs = src/main.o src/ring.o
