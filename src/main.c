@@ -1,9 +1,6 @@
-#include "asm-generic/errno-base.h"
-#include "asm-generic/int-ll64.h"
-#include "linux/compiler_attributes.h"
-#include "linux/spinlock_types.h"
 #include "ring.h"
 #include "snout.h"
+#include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/ip.h>
 #include <linux/kernel.h>
@@ -13,7 +10,9 @@
 #include <linux/netfilter_ipv4.h>
 #include <linux/printk.h>
 #include <linux/skbuff.h>
+#include <linux/spinlock.h>
 #include <linux/tcp.h>
+#include <linux/timekeeping.h>
 #include <linux/udp.h>
 
 MODULE_LICENSE("GPL");
@@ -26,70 +25,42 @@ module_param(ring_size, int, 0);
 int snaplen = 65535;
 module_param(snaplen, int, 0);
 
+static u8 *snout_stage;
+
 static struct ring *snout_ring;
+
+static u64 snout_packets = 0, snout_bytes = 0;
 
 static struct nf_hook_ops nfho;
 
-static void capture_packet(struct sk_buff *skb) {}
-
-static bool get_packet_payload(struct sk_buff *skb, void *dest_buffer,
-                               int max_len, int *bytes_copied) {
-  struct iphdr *iph;
-  struct iphdr _iph;
-  int transport_offset = 0;
-  int payload_offset = 0;
-  int total_len = skb->len;
-
-  int net_offset = skb_network_offset(skb);
-  iph = skb_header_pointer(skb, net_offset, sizeof(struct iphdr), &_iph);
-  if (!iph) {
-    return false;
-  }
-
-  transport_offset = net_offset + (iph->ihl * 4);
-
-  if (iph->protocol == IPPROTO_TCP) {
-    struct tcphdr _tcph;
-    struct tcphdr *tcph;
-
-    tcph = skb_header_pointer(skb, transport_offset, sizeof(struct tcphdr),
-                              &_tcph);
-    if (!tcph) {
-      return false;
-    }
-
-    payload_offset = transport_offset + (tcph->doff * 4);
-  } else if (iph->protocol == IPPROTO_UDP) {
-    payload_offset = transport_offset + sizeof(struct udphdr);
-  } else {
-    return false;
-  }
-
-  if (payload_offset >= total_len) {
-    return false;
-  }
-
-  int available_payload_len = total_len - payload_offset;
-  int bytes_to_read =
-      (available_payload_len < max_len) ? available_payload_len : max_len;
-
-  if (skb_copy_bits(skb, payload_offset, dest_buffer, bytes_to_read) < 0) {
-    return false;
-  }
-
-  *bytes_copied = bytes_to_read;
-  return true;
-}
-
 static unsigned int netfilter_hook(void *priv, struct sk_buff *skb,
                                    const struct nf_hook_state *state) {
+  spin_lock_bh(&snout_ring->lock);
 
-  char payload_buf[64];
-  int bytes_copied = 0;
-  if (get_packet_payload(skb, payload_buf, sizeof(payload_buf),
-                         &bytes_copied)) {
-    pr_info("Successfully grabbed %d bytes of payload!\n", bytes_copied);
+  struct timespec64 ts;
+  ktime_get_real_ts64(&ts);
+  struct pcap_packet_hdr packet_hdr;
+  u32 caplen = min_t(u32, skb->len, snaplen);
+
+  packet_hdr.timestamp_seconds = cpu_to_le32(ts.tv_sec);
+  packet_hdr.timestamp_microseconds = cpu_to_le32(ts.tv_nsec / 1000);
+  packet_hdr.captured_length = cpu_to_le32(caplen);
+  packet_hdr.original_length = cpu_to_le32(skb->len);
+
+  if (skb_copy_bits(skb, 0, snout_stage, caplen) < 0) {
+    spin_unlock_bh(&snout_ring->lock);
+    return NF_ACCEPT; // Skip packet
   }
+
+  int ret =
+      ring_write_record(snout_ring, &packet_hdr, sizeof(struct pcap_packet_hdr),
+                        snout_stage, caplen);
+  if (ret == 0) {
+    snout_packets++;
+    snout_bytes += caplen;
+  }
+
+  spin_unlock_bh(&snout_ring->lock);
   return NF_ACCEPT;
 }
 
@@ -116,6 +87,13 @@ static int __init snout_init(void) {
     return -ENOMEM;
   }
 
+  snout_stage = kzalloc(snaplen, GFP_KERNEL);
+  if (!snout_stage) {
+    ring_destroy(snout_ring);
+    pr_err("snount: stage buffer failed allocation\n");
+    return -ENOMEM;
+  }
+
   nfho.hook = netfilter_hook;
   nfho.hooknum = NF_INET_PRE_ROUTING;
   nfho.pf = PF_INET;
@@ -125,6 +103,7 @@ static int __init snout_init(void) {
   if (err < 0) {
     pr_err("snount: nf_register_net_hook failed: %d\n", err);
     ring_destroy(snout_ring);
+    kfree(snout_stage);
     return err;
   }
 
@@ -135,7 +114,17 @@ static int __init snout_init(void) {
 static void __exit snout_exit(void) {
   nf_unregister_net_hook(&init_net, &nfho);
 
+  spin_lock_bh(&snout_ring->lock);
+
+  unsigned int usage =
+      ring_available(snout_ring) * 100 / (snout_ring->size - 1);
+  pr_info("packets=%llu, bytes=%llu, dropped=%llu, ring_usage=%u%%",
+          snout_packets, snout_bytes, snout_ring->dropped, usage);
+
+  spin_unlock_bh(&snout_ring->lock);
+
   ring_destroy(snout_ring);
+  kfree(snout_stage);
 
   pr_info("snount exit success\n");
   return;

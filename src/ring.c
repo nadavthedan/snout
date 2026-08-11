@@ -23,7 +23,7 @@ void ring_destroy(struct ring *ring) {
 static size_t ring_space(struct ring *ring) {
   return ring->size - (ring->head - ring->tail) - 1;
 };
-static size_t ring_available(struct ring *ring) {
+size_t ring_available(struct ring *ring) {
   size_t available = ring->head - ring->tail;
   return available < ring->size ? available : ring->size - 1;
 };

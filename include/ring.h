@@ -22,6 +22,7 @@ struct ring {
 
 struct ring *ring_init(size_t size);
 void ring_destroy(struct ring *ring);
+size_t ring_available(struct ring *ring);
 int ring_write_record(struct ring *ring, const void *hdr, size_t hdr_len,
                       const void *payload, size_t payload_len);
 size_t ring_read(struct ring *ring, u8 *buf, size_t len);
