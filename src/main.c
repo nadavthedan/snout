@@ -1,6 +1,8 @@
 #include "ring.h"
 #include "snout.h"
+#include <linux/device/class.h>
 #include <linux/errno.h>
+#include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/ip.h>
 #include <linux/kernel.h>
@@ -14,10 +16,13 @@
 #include <linux/tcp.h>
 #include <linux/timekeeping.h>
 #include <linux/udp.h>
+#include <linux/version.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Nadev");
 MODULE_DESCRIPTION("A packet sniffer kernel module");
+
+#define DEVICE_NAME "snout"
 
 int ring_size = 1 << 20;
 module_param(ring_size, int, 0);
@@ -31,7 +36,14 @@ static struct ring *snout_ring;
 
 static u64 snout_packets = 0, snout_bytes = 0;
 
+static struct class *cls;
 static struct nf_hook_ops nfho;
+static int major;
+
+static struct file_operations snoutdev_fops = {
+    .open = snout_open,
+    .release = snout_release,
+};
 
 static unsigned int netfilter_hook(void *priv, struct sk_buff *skb,
                                    const struct nf_hook_state *state) {
@@ -63,6 +75,16 @@ static unsigned int netfilter_hook(void *priv, struct sk_buff *skb,
   spin_unlock_bh(&snout_ring->lock);
   return NF_ACCEPT;
 }
+
+int snout_open(struct inode *inode, struct file *file) {
+  struct snout_file_ctx {
+    bool hdr_sent;
+  };
+
+  return 0;
+}
+
+int snout_release(struct inode *inode, struct file *file) { return 0; }
 
 static int __init snout_init(void) {
   int err;
@@ -107,7 +129,28 @@ static int __init snout_init(void) {
     return err;
   }
 
-  pr_info("snount init success\n");
+  major = register_chrdev(0, DEVICE_NAME, &snoutdev_fops);
+  if (major < 0) {
+    pr_err("snout: failed to register snout char device. err: %d\n", major);
+    ring_destroy(snout_ring);
+    kfree(snout_stage);
+    // TODO: check do I need to unregister the netfilter hook?
+    return major;
+  }
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+  cls = class_create(DEVICE_NAME);
+#else
+  cls = class_create(THIS_MODULE, DEVICE_NAME);
+#endif
+  if (IS_ERR(cls)) {
+    pr_err("Failed to create class for %s device\n", DEVICE_NAME);
+    unregister_chrdev(major, DEVICE_NAME);
+    return PTR_ERR(cls);
+  }
+  device_create(cls, NULL, MKDEV(major, 0), NULL, DEVICE_NAME);
+
+  pr_info("snount device init success\n");
   return 0;
 }
 

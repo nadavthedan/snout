@@ -19,4 +19,8 @@ struct pcap_packet_hdr {
   __le32 captured_length;
   __le32 original_length;
 } __packed;
+
+int snout_open(struct inode *, struct file *);
+int snout_release(struct inode *, struct file *);
+
 #endif
