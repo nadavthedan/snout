@@ -12,6 +12,7 @@ struct ring *ring_init(size_t size) {
   }
   ring->size = size;
   spin_lock_init(&ring->lock);
+  init_waitqueue_head(&ring->wait);
   return ring;
 };
 

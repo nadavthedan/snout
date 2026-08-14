@@ -2,7 +2,6 @@
 #define RING
 
 #include "snout.h"
-#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/minmax.h>
 #include <linux/mm.h>
@@ -10,6 +9,7 @@
 #include <linux/spinlock.h>
 #include <linux/string.h>
 #include <linux/types.h>
+#include <linux/wait.h>
 
 struct ring {
   u8 *buf;
@@ -18,6 +18,7 @@ struct ring {
   unsigned long head;
   unsigned long tail;
   spinlock_t lock;
+  wait_queue_head_t wait;
 };
 
 struct ring *ring_init(size_t size);
