@@ -229,8 +229,22 @@ ssize_t snout_read(struct file *flip, char __user *buffer, size_t length,
 }
 
 __poll_t snout_poll(struct file *flip, struct poll_table_struct *poll_table) {
+  struct snout_file_ctx *ctx = flip->private_data;
+  __poll_t poll_mask = 0;
 
-  return 0;
+  poll_wait(flip, &snout_ring->wait, poll_table);
+
+  if (!ctx->hdr_sent) {
+    poll_mask |= POLLIN | POLLRDNORM;
+  }
+
+  spin_lock_bh(&snout_ring->lock);
+  if (ring_available(snout_ring) > 0) {
+    poll_mask |= POLLIN | POLLRDNORM;
+  }
+  spin_unlock_bh(&snout_ring->lock);
+
+  return poll_mask;
 }
 
 static void __exit snout_exit(void) {
