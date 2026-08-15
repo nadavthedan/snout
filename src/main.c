@@ -14,6 +14,7 @@ int snaplen = 65535;
 module_param(snaplen, int, 0);
 
 static u8 *snout_stage;
+static u8 *snout_rbuf;
 
 static struct ring *snout_ring;
 
@@ -115,11 +116,20 @@ static int __init snout_init(void) {
     return -ENOMEM;
   }
 
+  snout_rbuf = kzalloc(snaplen, GFP_KERNEL);
+  if (!snout_rbuf) {
+    ring_destroy(snout_ring);
+    kfree(snout_stage);
+    pr_err("snout: read buffer failed allocation\n");
+    return -ENOMEM;
+  }
+
   major = register_chrdev(0, DEVICE_NAME, &snoutdev_fops);
   if (major < 0) {
     pr_err("snout: failed to register snout char device. err: %d\n", major);
     ring_destroy(snout_ring);
     kfree(snout_stage);
+    kfree(snout_rbuf);
     return major;
   }
 
@@ -132,6 +142,7 @@ static int __init snout_init(void) {
     pr_err("snout: failed to create class, err: %ld\n", PTR_ERR(cls));
     ring_destroy(snout_ring);
     kfree(snout_stage);
+    kfree(snout_rbuf);
     unregister_chrdev(major, DEVICE_NAME);
     return PTR_ERR(cls);
   }
@@ -142,6 +153,7 @@ static int __init snout_init(void) {
     pr_err("snout: failed to create device, err: %ld\n", PTR_ERR(dev));
     ring_destroy(snout_ring);
     kfree(snout_stage);
+    kfree(snout_rbuf);
     unregister_chrdev(major, DEVICE_NAME);
     class_destroy(cls);
     return PTR_ERR(dev);
@@ -157,6 +169,7 @@ static int __init snout_init(void) {
     pr_err("snout: nf_register_net_hook failed: %d\n", err);
     ring_destroy(snout_ring);
     kfree(snout_stage);
+    kfree(snout_rbuf);
     unregister_chrdev(major, DEVICE_NAME);
     class_destroy(cls);
     device_destroy(dev->class, dev->devt);
@@ -169,7 +182,10 @@ static int __init snout_init(void) {
 
 ssize_t snout_read(struct file *flip, char __user *buffer, size_t length,
                    loff_t *offset) {
-  int err;
+  if (length == 0) {
+    return 0;
+  }
+
   ssize_t bytes_read = 0;
   struct snout_file_ctx *ctx = flip->private_data;
   if (!ctx->hdr_sent) {
@@ -182,7 +198,33 @@ ssize_t snout_read(struct file *flip, char __user *buffer, size_t length,
     ctx->hdr_sent = true;
     bytes_read += sizeof(global_hdr);
   }
-
+  while (length - bytes_read > 0) {
+    int bytes_to_read = min_t(size_t, snaplen, length - bytes_read);
+    spin_lock_bh(&snout_ring->lock);
+    if (ring_available(snout_ring) == 0) {
+      spin_unlock_bh(&snout_ring->lock);
+      if (bytes_read > 0) {
+        break;
+      }
+      if (flip->f_flags & O_NONBLOCK) {
+        return -EAGAIN;
+      }
+      if (wait_event_interruptible(snout_ring->wait,
+                                   ring_available(snout_ring) > 0)) {
+        return -ERESTARTSYS;
+      }
+      continue;
+    }
+    size_t len = ring_read(snout_ring, snout_rbuf, bytes_to_read);
+    spin_unlock_bh(&snout_ring->lock);
+    if (copy_to_user(buffer + bytes_read, snout_rbuf, len)) {
+      if (bytes_read > 0) {
+        return bytes_read;
+      }
+      return -EFAULT;
+    }
+    bytes_read += len;
+  }
   return bytes_read;
 }
 
@@ -206,8 +248,9 @@ static void __exit snout_exit(void) {
 
   spin_unlock_bh(&snout_ring->lock);
 
-  ring_destroy(snout_ring);
+  kfree(snout_rbuf);
   kfree(snout_stage);
+  ring_destroy(snout_ring);
 
   pr_info("snout: exit success\n");
   return;

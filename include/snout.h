@@ -3,6 +3,7 @@
 #include <linux/byteorder/little_endian.h>
 #include <linux/device.h>
 #include <linux/errno.h>
+#include <linux/fcntl.h>
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/ip.h>
@@ -12,6 +13,7 @@
 #include <linux/moduleparam.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv4.h>
+#include <linux/poll.h>
 #include <linux/printk.h>
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
