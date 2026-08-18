@@ -1,3 +1,5 @@
+#include "linux/netfilter.h"
+#include "linux/spinlock.h"
 #include "ring.h"
 #include "snout.h"
 
@@ -18,8 +20,9 @@ static u8 *snout_rbuf;
 
 static struct ring *snout_ring;
 
-static u64 snout_packets = 0, snout_bytes = 0;
+static struct snout_stats snout_stats;
 static struct pcap_global_hdr global_hdr;
+static u32 snout_filter = 0;
 
 static struct class *cls;
 static struct nf_hook_ops nfho;
@@ -29,6 +32,7 @@ static struct file_operations snoutdev_fops = {.open = snout_open,
                                                .release = snout_release,
                                                .read = snout_read,
                                                .poll = snout_poll,
+                                               .unlocked_ioctl = snout_ioctl,
                                                .owner = THIS_MODULE};
 
 static unsigned int netfilter_hook(void *priv, struct sk_buff *skb,
@@ -39,6 +43,11 @@ static unsigned int netfilter_hook(void *priv, struct sk_buff *skb,
   ktime_get_real_ts64(&ts);
   struct pcap_packet_hdr packet_hdr;
   u32 caplen = min_t(u32, skb->len, snaplen);
+
+  if (snout_filter && ip_hdr(skb)->protocol != snout_filter) {
+    spin_unlock_bh(&snout_ring->lock);
+    return NF_ACCEPT;
+  }
 
   packet_hdr.timestamp_seconds = cpu_to_le32(ts.tv_sec);
   packet_hdr.timestamp_microseconds = cpu_to_le32(ts.tv_nsec / 1000);
@@ -53,11 +62,13 @@ static unsigned int netfilter_hook(void *priv, struct sk_buff *skb,
   int ret =
       ring_write_record(snout_ring, &packet_hdr, sizeof(struct pcap_packet_hdr),
                         snout_stage, caplen);
+  if (ret == 0) {
+    snout_stats.packets++;
+    snout_stats.bytes += caplen;
+  }
   spin_unlock_bh(&snout_ring->lock);
   if (ret == 0) {
     wake_up_interruptible(&snout_ring->wait);
-    snout_packets++;
-    snout_bytes += caplen;
   }
 
   return NF_ACCEPT;
@@ -247,6 +258,39 @@ __poll_t snout_poll(struct file *flip, struct poll_table_struct *poll_table) {
   return poll_mask;
 }
 
+long snout_ioctl(struct file *flip, unsigned int cmd, unsigned long arg) {
+  switch (cmd) {
+  case SNAPIOC_GET_STATS:
+    struct snout_stats statscopy;
+    spin_lock_bh(&snout_ring->lock);
+    statscopy = snout_stats;
+    statscopy.dropped = snout_ring->dropped;
+    statscopy.ring_usage =
+        ring_available(snout_ring) * 100 / (snout_ring->size - 1);
+    spin_unlock_bh(&snout_ring->lock);
+    if (copy_to_user((void __user *)arg, &statscopy, sizeof(statscopy))) {
+      return -EFAULT;
+    }
+    break;
+  case SNAPIOC_RESET_STATS:
+    spin_lock_bh(&snout_ring->lock);
+    snout_stats.bytes = 0;
+    snout_stats.packets = 0;
+    snout_ring->dropped = 0;
+    snout_stats.ring_usage = 0;
+    spin_unlock_bh(&snout_ring->lock);
+    break;
+  case SNAPIOC_SET_FILTER:
+    spin_lock_bh(&snout_ring->lock);
+    snout_filter = (u32)arg;
+    spin_unlock_bh(&snout_ring->lock);
+    break;
+  default:
+    return -ENOTTY;
+  }
+  return 0;
+}
+
 static void __exit snout_exit(void) {
   nf_unregister_net_hook(&init_net, &nfho);
   device_destroy(cls, MKDEV(major, 0));
@@ -258,7 +302,7 @@ static void __exit snout_exit(void) {
   unsigned int usage =
       ring_available(snout_ring) * 100 / (snout_ring->size - 1);
   pr_info("snout: packets=%llu, bytes=%llu, dropped=%llu, ring_usage=%u%%",
-          snout_packets, snout_bytes, snout_ring->dropped, usage);
+          snout_stats.packets, snout_stats.bytes, snout_ring->dropped, usage);
 
   spin_unlock_bh(&snout_ring->lock);
 

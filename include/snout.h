@@ -6,6 +6,7 @@
 #include <linux/fcntl.h>
 #include <linux/fs.h>
 #include <linux/init.h>
+#include <linux/ioctl.h>
 #include <linux/ip.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -49,4 +50,16 @@ int snout_release(struct inode *, struct file *);
 ssize_t snout_read(struct file *flip, char __user *buffer, size_t length,
                    loff_t *offset);
 __poll_t snout_poll(struct file *flip, struct poll_table_struct *poll_table);
+long snout_ioctl(struct file *flip, unsigned int cmd, unsigned long arg);
+
+// start ioctl snout commands
+#define SNAPIOC_MAGIC 'S'
+struct snout_stats {
+  __u64 packets, bytes, dropped;
+  __u32 ring_usage, reserved;
+};
+#define SNAPIOC_GET_STATS _IOR(SNAPIOC_MAGIC, 1, struct snout_stats)
+#define SNAPIOC_RESET_STATS _IO(SNAPIOC_MAGIC, 2)
+#define SNAPIOC_SET_FILTER _IOW(SNAPIOC_MAGIC, 3, u32)
+// end ioctl snout commands
 #endif
