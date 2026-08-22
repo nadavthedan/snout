@@ -3,8 +3,10 @@
 #include <linux/byteorder/little_endian.h>
 #include <linux/device.h>
 #include <linux/errno.h>
+#include <linux/etherdevice.h>
 #include <linux/fcntl.h>
 #include <linux/fs.h>
+#include <linux/if_vlan.h>
 #include <linux/init.h>
 #include <linux/ioctl.h>
 #include <linux/ip.h>
@@ -12,8 +14,6 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-#include <linux/netfilter.h>
-#include <linux/netfilter_ipv4.h>
 #include <linux/poll.h>
 #include <linux/printk.h>
 #include <linux/skbuff.h>
@@ -45,12 +45,20 @@ struct snout_file_ctx {
   bool hdr_sent;
 };
 
+struct snout_filter {
+  __be16 protocol;
+};
+
 int snout_open(struct inode *, struct file *);
 int snout_release(struct inode *, struct file *);
 ssize_t snout_read(struct file *flip, char __user *buffer, size_t length,
                    loff_t *offset);
 __poll_t snout_poll(struct file *flip, struct poll_table_struct *poll_table);
 long snout_ioctl(struct file *flip, unsigned int cmd, unsigned long arg);
+
+int snout_dev_add_pack_callback(struct sk_buff *skb, struct net_device *dev,
+                                struct packet_type *pt,
+                                struct net_device *orig_dev);
 
 // start ioctl snout commands
 #define SNAPIOC_MAGIC 'S'
@@ -60,6 +68,6 @@ struct snout_stats {
 };
 #define SNAPIOC_GET_STATS _IOR(SNAPIOC_MAGIC, 1, struct snout_stats)
 #define SNAPIOC_RESET_STATS _IO(SNAPIOC_MAGIC, 2)
-#define SNAPIOC_SET_FILTER _IOW(SNAPIOC_MAGIC, 3, u32)
+#define SNAPIOC_SET_FILTER _IOW(SNAPIOC_MAGIC, 3, struct snout_filter)
 // end ioctl snout commands
 #endif

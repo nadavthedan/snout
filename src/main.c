@@ -1,5 +1,3 @@
-#include "linux/netfilter.h"
-#include "linux/spinlock.h"
 #include "ring.h"
 #include "snout.h"
 
@@ -22,10 +20,11 @@ static struct ring *snout_ring;
 
 static struct snout_stats snout_stats;
 static struct pcap_global_hdr global_hdr;
-static u32 snout_filter = 0;
+static struct snout_filter snout_filter = {0};
+static struct packet_type snout_pt = {
+    .dev = NULL, .type = htons(ETH_P_ALL), .func = snout_dev_add_pack_callback};
 
 static struct class *cls;
-static struct nf_hook_ops nfho;
 static int major;
 
 static struct file_operations snoutdev_fops = {.open = snout_open,
@@ -35,8 +34,30 @@ static struct file_operations snoutdev_fops = {.open = snout_open,
                                                .unlocked_ioctl = snout_ioctl,
                                                .owner = THIS_MODULE};
 
-static unsigned int netfilter_hook(void *priv, struct sk_buff *skb,
-                                   const struct nf_hook_state *state) {
+static u32 vlan_tag_restore(struct sk_buff *skb, u32 caplen,
+                            struct pcap_packet_hdr *packet_hdr) {
+  const u32 off = 2 * ETH_ALEN;
+  const u32 tagsz = VLAN_HLEN;
+
+  if (!skb_vlan_tag_present(skb) ||
+      eth_hdr(skb)->h_proto == htons(ETH_P_8021Q) || caplen < off + tagsz) {
+    return caplen;
+  }
+
+  memmove(snout_stage + off + tagsz, snout_stage + off,
+          min(caplen, snaplen - tagsz) - off);
+  put_unaligned_be16(ETH_P_8021Q, snout_stage + off);
+  put_unaligned_be16(skb_vlan_tag_get(skb), snout_stage + off + 2);
+
+  caplen = min(caplen + tagsz, snaplen);
+  packet_hdr->captured_length = cpu_to_le32(caplen);
+  packet_hdr->original_length = cpu_to_le32(skb->len + tagsz);
+  return caplen;
+}
+
+int snout_dev_add_pack_callback(struct sk_buff *skb, struct net_device *dev,
+                                struct packet_type *pt,
+                                struct net_device *orig_dev) {
   spin_lock_bh(&snout_ring->lock);
 
   struct timespec64 ts;
@@ -44,20 +65,22 @@ static unsigned int netfilter_hook(void *priv, struct sk_buff *skb,
   struct pcap_packet_hdr packet_hdr;
   u32 caplen = min_t(u32, skb->len, snaplen);
 
-  if (snout_filter && ip_hdr(skb)->protocol != snout_filter) {
+  if (snout_filter.protocol != 0 &&
+      eth_hdr(skb)->h_proto != snout_filter.protocol) {
     spin_unlock_bh(&snout_ring->lock);
-    return NF_ACCEPT;
+    return NET_RX_DROP;
   }
 
+  if (skb_copy_bits(skb, 0, snout_stage, caplen) < 0) {
+    spin_unlock_bh(&snout_ring->lock);
+    return NET_RX_DROP; // Skip packet
+  }
   packet_hdr.timestamp_seconds = cpu_to_le32(ts.tv_sec);
   packet_hdr.timestamp_microseconds = cpu_to_le32(ts.tv_nsec / 1000);
   packet_hdr.captured_length = cpu_to_le32(caplen);
   packet_hdr.original_length = cpu_to_le32(skb->len);
 
-  if (skb_copy_bits(skb, 0, snout_stage, caplen) < 0) {
-    spin_unlock_bh(&snout_ring->lock);
-    return NF_ACCEPT; // Skip packet
-  }
+  caplen = vlan_tag_restore(skb, caplen, &packet_hdr);
 
   int ret =
       ring_write_record(snout_ring, &packet_hdr, sizeof(struct pcap_packet_hdr),
@@ -71,7 +94,7 @@ static unsigned int netfilter_hook(void *priv, struct sk_buff *skb,
     wake_up_interruptible(&snout_ring->wait);
   }
 
-  return NF_ACCEPT;
+  return NET_RX_DROP;
 }
 
 int snout_open(struct inode *inode, struct file *flip) {
@@ -86,108 +109,6 @@ int snout_open(struct inode *inode, struct file *flip) {
 int snout_release(struct inode *inode, struct file *flip) {
   kfree(flip->private_data);
 
-  return 0;
-}
-
-static int __init snout_init(void) {
-  int err;
-
-  // params validation
-  if (ring_size < 4096) {
-    pr_err("snout: ring_size %d too small (min 4096)\n", ring_size);
-    return -EINVAL;
-  }
-  if (snaplen < 0 || snaplen > 65535) {
-    pr_err("snout: snaplen %d out of range\n", snaplen);
-    return -EINVAL;
-  }
-  if (snaplen > ring_size - (int)sizeof(struct pcap_packet_hdr) - 1) {
-    pr_err("snout: snaplen %d exceeds ring capacity\n", snaplen);
-    return -EINVAL;
-  }
-
-  global_hdr.magic_number = cpu_to_le32(0xa1b2c3d4);
-  global_hdr.version_major = cpu_to_le16(2);
-  global_hdr.version_minor = cpu_to_le16(4);
-  global_hdr.time_zone_correction = cpu_to_le32(0);
-  global_hdr.timestamp_accuracy = cpu_to_le32(0);
-  global_hdr.snapshot_length = cpu_to_le32(snaplen);
-  global_hdr.link_layer_type = cpu_to_le32(101);
-
-  snout_ring = ring_init(ring_size);
-  if (!snout_ring) {
-    pr_err("snout: ring failed allocation\n");
-    return -ENOMEM;
-  }
-
-  snout_stage = kzalloc(snaplen, GFP_KERNEL);
-  if (!snout_stage) {
-    ring_destroy(snout_ring);
-    pr_err("snout: stage buffer failed allocation\n");
-    return -ENOMEM;
-  }
-
-  snout_rbuf = kzalloc(snaplen, GFP_KERNEL);
-  if (!snout_rbuf) {
-    ring_destroy(snout_ring);
-    kfree(snout_stage);
-    pr_err("snout: read buffer failed allocation\n");
-    return -ENOMEM;
-  }
-
-  major = register_chrdev(0, DEVICE_NAME, &snoutdev_fops);
-  if (major < 0) {
-    pr_err("snout: failed to register snout char device. err: %d\n", major);
-    ring_destroy(snout_ring);
-    kfree(snout_stage);
-    kfree(snout_rbuf);
-    return major;
-  }
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
-  cls = class_create(DEVICE_NAME);
-#else
-  cls = class_create(THIS_MODULE, DEVICE_NAME);
-#endif
-  if (IS_ERR(cls)) {
-    pr_err("snout: failed to create class, err: %ld\n", PTR_ERR(cls));
-    ring_destroy(snout_ring);
-    kfree(snout_stage);
-    kfree(snout_rbuf);
-    unregister_chrdev(major, DEVICE_NAME);
-    return PTR_ERR(cls);
-  }
-  struct device *dev =
-      device_create(cls, NULL, MKDEV(major, 0), NULL, DEVICE_NAME);
-
-  if (IS_ERR(dev)) {
-    pr_err("snout: failed to create device, err: %ld\n", PTR_ERR(dev));
-    ring_destroy(snout_ring);
-    kfree(snout_stage);
-    kfree(snout_rbuf);
-    unregister_chrdev(major, DEVICE_NAME);
-    class_destroy(cls);
-    return PTR_ERR(dev);
-  }
-
-  nfho.hook = netfilter_hook;
-  nfho.hooknum = NF_INET_PRE_ROUTING;
-  nfho.pf = PF_INET;
-  nfho.priority = NF_IP_PRI_FIRST;
-
-  err = nf_register_net_hook(&init_net, &nfho);
-  if (err < 0) {
-    pr_err("snout: nf_register_net_hook failed: %d\n", err);
-    ring_destroy(snout_ring);
-    kfree(snout_stage);
-    kfree(snout_rbuf);
-    unregister_chrdev(major, DEVICE_NAME);
-    class_destroy(cls);
-    device_destroy(dev->class, dev->devt);
-    return err;
-  }
-
-  pr_info("snout device init success\n");
   return 0;
 }
 
@@ -281,8 +202,12 @@ long snout_ioctl(struct file *flip, unsigned int cmd, unsigned long arg) {
     spin_unlock_bh(&snout_ring->lock);
     break;
   case SNAPIOC_SET_FILTER:
+    struct snout_filter filter;
+    if (copy_from_user(&filter, (void __user *)arg, sizeof(filter))) {
+      return -EFAULT;
+    }
     spin_lock_bh(&snout_ring->lock);
-    snout_filter = (u32)arg;
+    snout_filter = filter;
     spin_unlock_bh(&snout_ring->lock);
     break;
   default:
@@ -291,8 +216,93 @@ long snout_ioctl(struct file *flip, unsigned int cmd, unsigned long arg) {
   return 0;
 }
 
+static int __init snout_init(void) {
+  // params validation
+  if (ring_size < 4096) {
+    pr_err("snout: ring_size %d too small (min 4096)\n", ring_size);
+    return -EINVAL;
+  }
+  if (snaplen < 0 || snaplen > 65535) {
+    pr_err("snout: snaplen %d out of range\n", snaplen);
+    return -EINVAL;
+  }
+  if (snaplen > ring_size - (int)sizeof(struct pcap_packet_hdr) - 1) {
+    pr_err("snout: snaplen %d exceeds ring capacity\n", snaplen);
+    return -EINVAL;
+  }
+
+  global_hdr.magic_number = cpu_to_le32(0xa1b2c3d4);
+  global_hdr.version_major = cpu_to_le16(2);
+  global_hdr.version_minor = cpu_to_le16(4);
+  global_hdr.time_zone_correction = cpu_to_le32(0);
+  global_hdr.timestamp_accuracy = cpu_to_le32(0);
+  global_hdr.snapshot_length = cpu_to_le32(snaplen);
+  global_hdr.link_layer_type = cpu_to_le32(1);
+
+  snout_ring = ring_init(ring_size);
+  if (!snout_ring) {
+    pr_err("snout: ring failed allocation\n");
+    return -ENOMEM;
+  }
+
+  snout_stage = kzalloc(snaplen, GFP_KERNEL);
+  if (!snout_stage) {
+    ring_destroy(snout_ring);
+    pr_err("snout: stage buffer failed allocation\n");
+    return -ENOMEM;
+  }
+
+  snout_rbuf = kzalloc(snaplen, GFP_KERNEL);
+  if (!snout_rbuf) {
+    ring_destroy(snout_ring);
+    kfree(snout_stage);
+    pr_err("snout: read buffer failed allocation\n");
+    return -ENOMEM;
+  }
+
+  major = register_chrdev(0, DEVICE_NAME, &snoutdev_fops);
+  if (major < 0) {
+    pr_err("snout: failed to register snout char device. err: %d\n", major);
+    ring_destroy(snout_ring);
+    kfree(snout_stage);
+    kfree(snout_rbuf);
+    return major;
+  }
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+  cls = class_create(DEVICE_NAME);
+#else
+  cls = class_create(THIS_MODULE, DEVICE_NAME);
+#endif
+  if (IS_ERR(cls)) {
+    pr_err("snout: failed to create class, err: %ld\n", PTR_ERR(cls));
+    ring_destroy(snout_ring);
+    kfree(snout_stage);
+    kfree(snout_rbuf);
+    unregister_chrdev(major, DEVICE_NAME);
+    return PTR_ERR(cls);
+  }
+  struct device *dev =
+      device_create(cls, NULL, MKDEV(major, 0), NULL, DEVICE_NAME);
+
+  if (IS_ERR(dev)) {
+    pr_err("snout: failed to create device, err: %ld\n", PTR_ERR(dev));
+    ring_destroy(snout_ring);
+    kfree(snout_stage);
+    kfree(snout_rbuf);
+    unregister_chrdev(major, DEVICE_NAME);
+    class_destroy(cls);
+    return PTR_ERR(dev);
+  }
+
+  dev_add_pack(&snout_pt);
+
+  pr_info("snout device init success\n");
+  return 0;
+}
+
 static void __exit snout_exit(void) {
-  nf_unregister_net_hook(&init_net, &nfho);
+  dev_remove_pack(&snout_pt);
   device_destroy(cls, MKDEV(major, 0));
   class_destroy(cls);
   unregister_chrdev(major, DEVICE_NAME);
