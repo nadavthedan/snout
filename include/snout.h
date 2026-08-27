@@ -63,7 +63,7 @@ int snout_dev_add_pack_callback(struct sk_buff *skb, struct net_device *dev,
 // start ioctl snout commands
 #define SNAPIOC_MAGIC 'S'
 struct snout_stats {
-  __u64 packets, bytes, dropped;
+  __u64 packets, bytes, overflow_count, dropped_bytes;
   __u32 ring_usage, reserved;
 };
 #define SNAPIOC_GET_STATS _IOR(SNAPIOC_MAGIC, 1, struct snout_stats)

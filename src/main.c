@@ -23,7 +23,6 @@ static struct pcap_global_hdr global_hdr;
 static struct snout_filter snout_filter = {0};
 static struct packet_type snout_pt = {
     .dev = NULL, .type = htons(ETH_P_ALL), .func = snout_dev_add_pack_callback};
-
 static struct class *cls;
 static int major;
 
@@ -73,7 +72,7 @@ int snout_dev_add_pack_callback(struct sk_buff *skb, struct net_device *dev,
 
   if (skb_copy_bits(skb, 0, snout_stage, caplen) < 0) {
     spin_unlock_bh(&snout_ring->lock);
-    return NET_RX_DROP; // Skip packet
+    return NET_RX_DROP;
   }
   packet_hdr.timestamp_seconds = cpu_to_le32(ts.tv_sec);
   packet_hdr.timestamp_microseconds = cpu_to_le32(ts.tv_nsec / 1000);
@@ -185,7 +184,8 @@ long snout_ioctl(struct file *flip, unsigned int cmd, unsigned long arg) {
     struct snout_stats statscopy;
     spin_lock_bh(&snout_ring->lock);
     statscopy = snout_stats;
-    statscopy.dropped = snout_ring->dropped;
+    statscopy.overflow_count = snout_ring->overflow_count;
+    statscopy.dropped_bytes = snout_ring->dropped_bytes;
     statscopy.ring_usage =
         ring_available(snout_ring) * 100 / (snout_ring->size - 1);
     spin_unlock_bh(&snout_ring->lock);
@@ -197,7 +197,8 @@ long snout_ioctl(struct file *flip, unsigned int cmd, unsigned long arg) {
     spin_lock_bh(&snout_ring->lock);
     snout_stats.bytes = 0;
     snout_stats.packets = 0;
-    snout_ring->dropped = 0;
+    snout_ring->overflow_count = 0;
+    snout_ring->dropped_bytes = 0;
     snout_stats.ring_usage = 0;
     spin_unlock_bh(&snout_ring->lock);
     break;
@@ -311,8 +312,10 @@ static void __exit snout_exit(void) {
 
   unsigned int usage =
       ring_available(snout_ring) * 100 / (snout_ring->size - 1);
-  pr_info("snout: packets=%llu, bytes=%llu, dropped=%llu, ring_usage=%u%%",
-          snout_stats.packets, snout_stats.bytes, snout_ring->dropped, usage);
+  pr_info("snout: packets=%llu, bytes=%llu, overflow_count=%llu, "
+          "dropped_bytes=%llu, ring_usage=%u%%",
+          snout_stats.packets, snout_stats.bytes, snout_ring->overflow_count,
+          snout_ring->dropped_bytes, usage);
 
   spin_unlock_bh(&snout_ring->lock);
 
