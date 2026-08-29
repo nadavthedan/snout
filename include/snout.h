@@ -1,5 +1,6 @@
 #ifndef SNOUT
 #define SNOUT
+#include "ring.h"
 #include <linux/byteorder/little_endian.h>
 #include <linux/device.h>
 #include <linux/errno.h>
@@ -64,10 +65,11 @@ int snout_dev_add_pack_callback(struct sk_buff *skb, struct net_device *dev,
 #define SNAPIOC_MAGIC 'S'
 struct snout_stats {
   __u64 packets, bytes, overflow_count, dropped_bytes;
-  __u32 ring_usage, reserved;
+  __u32 ring_usage, policy;
 };
 #define SNAPIOC_GET_STATS _IOR(SNAPIOC_MAGIC, 1, struct snout_stats)
 #define SNAPIOC_RESET_STATS _IO(SNAPIOC_MAGIC, 2)
 #define SNAPIOC_SET_FILTER _IOW(SNAPIOC_MAGIC, 3, struct snout_filter)
+#define SNAPIOC_SET_DROP_POLICY _IOW(SNAPIOC_MAGIC, 4, __u32)
 // end ioctl snout commands
 #endif

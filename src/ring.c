@@ -67,6 +67,8 @@ static int handle_drop_policy(struct ring *ring, size_t total) {
       ring->dropped_bytes += first_packet_length;
     } while (total > ring_space(ring));
     return 0;
+  default:
+    return -EINVAL;
   }
 }
 

@@ -2,7 +2,6 @@
 #define RING
 #define SIZE_METADATA_BYTE_LEN 2
 
-#include "snout.h"
 #include <linux/kernel.h>
 #include <linux/minmax.h>
 #include <linux/mm.h>

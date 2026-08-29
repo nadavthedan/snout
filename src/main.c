@@ -1,4 +1,3 @@
-#include "ring.h"
 #include "snout.h"
 
 MODULE_LICENSE("GPL");
@@ -44,11 +43,11 @@ static u32 vlan_tag_restore(struct sk_buff *skb, u32 caplen,
   }
 
   memmove(snout_stage + off + tagsz, snout_stage + off,
-          min(caplen, snaplen - tagsz) - off);
+          min_t(u32, caplen, snaplen - tagsz) - off);
   put_unaligned_be16(ETH_P_8021Q, snout_stage + off);
   put_unaligned_be16(skb_vlan_tag_get(skb), snout_stage + off + 2);
 
-  caplen = min(caplen + tagsz, snaplen);
+  caplen = min_t(u32, caplen + tagsz, snaplen);
   packet_hdr->captured_length = cpu_to_le32(caplen);
   packet_hdr->original_length = cpu_to_le32(skb->len + tagsz);
   return caplen;
@@ -186,6 +185,7 @@ long snout_ioctl(struct file *flip, unsigned int cmd, unsigned long arg) {
     statscopy = snout_stats;
     statscopy.overflow_count = snout_ring->overflow_count;
     statscopy.dropped_bytes = snout_ring->dropped_bytes;
+    statscopy.policy = snout_ring->policy;
     statscopy.ring_usage =
         ring_available(snout_ring) * 100 / (snout_ring->size - 1);
     spin_unlock_bh(&snout_ring->lock);
@@ -209,6 +209,18 @@ long snout_ioctl(struct file *flip, unsigned int cmd, unsigned long arg) {
     }
     spin_lock_bh(&snout_ring->lock);
     snout_filter = filter;
+    spin_unlock_bh(&snout_ring->lock);
+    break;
+  case SNAPIOC_SET_DROP_POLICY:
+    __u32 drop_policy;
+    if (copy_from_user(&drop_policy, (void __user *)arg, sizeof(drop_policy))) {
+      return -EFAULT;
+    }
+    if (drop_policy != DROP_NEWEST && drop_policy != DROP_OLDEST) {
+      return -EINVAL;
+    }
+    spin_lock_bh(&snout_ring->lock);
+    snout_ring->policy = drop_policy;
     spin_unlock_bh(&snout_ring->lock);
     break;
   default:
