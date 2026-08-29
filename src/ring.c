@@ -1,5 +1,4 @@
 #include "ring.h"
-#include <stdint.h>
 
 struct ring *ring_init(size_t size) {
   struct ring *ring = kzalloc(sizeof(*ring), GFP_KERNEL);
@@ -48,20 +47,25 @@ static size_t ring_put(struct ring *ring, const u8 *data, size_t len) {
   return len;
 }
 
+static u16 ring_peek_record_len(struct ring *ring) {
+  size_t p = ring->tail % ring->size;
+  return (u16)(ring->buf[p] | ((u16)ring->buf[(p + 1) % ring->size] << 8));
+}
+
 static int handle_drop_policy(struct ring *ring, size_t total) {
   u16 first_packet_length;
   switch (ring->policy) {
   case DROP_NEWEST:
     ring->overflow_count++;
-    ring->dropped_bytes += total;
+    ring->dropped_bytes += total - SIZE_METADATA_BYTE_LEN;
     return -ENOSPC; // just return no space and skip
   case DROP_OLDEST:
     do {
       ring->overflow_count++;
-      first_packet_length = ring->buf[ring->tail];
-      ring->tail += first_packet_length;
+      first_packet_length = ring_peek_record_len(ring);
+      ring->tail += first_packet_length + SIZE_METADATA_BYTE_LEN;
       ring->dropped_bytes += first_packet_length;
-    } while (total < ring_space(ring));
+    } while (total > ring_space(ring));
     return 0;
   }
 }
@@ -69,40 +73,47 @@ static int handle_drop_policy(struct ring *ring, size_t total) {
 int ring_write_record(struct ring *ring, const void *hdr, size_t hdr_len,
                       const void *payload, size_t payload_len) {
   int err;
-  size_t total = hdr_len + payload_len + SIZE_METADATA_BYTE_LEN;
+  u16 len_field = (u16)(hdr_len + payload_len);
+  size_t total = len_field + SIZE_METADATA_BYTE_LEN;
+  if (total > ring->size - 1) {
+    return -ENOSPC;
+  }
   if (total > ring_space(ring)) {
     if ((err = handle_drop_policy(ring, total)) < 0) {
       return err;
     }
   }
-  ring_put(ring, (void *)(u16)total, SIZE_METADATA_BYTE_LEN);
+  ring_put(ring, (void *)&len_field, sizeof(len_field));
   ring_put(ring, hdr, hdr_len);
   ring_put(ring, payload, payload_len);
   return 0;
 };
 
-u16 ring_peek_record_len(struct ring *ring) {
-  //
-  return 0;
-}
-
 size_t ring_read(struct ring *ring, u8 *buf, size_t len) {
-  size_t available, read_size, first, pos;
-  available = ring_available(ring);
-  if (!available) {
-    return 0;
+  size_t available, first, pos;
+  size_t copied = 0;
+  u16 packet_length;
+  while ((available = ring_available(ring)) && copied < len) {
+    if (!available) {
+      break;
+    }
+    packet_length = ring_peek_record_len(ring);
+    if (available < packet_length || copied + packet_length > len) {
+      break;
+    }
+    pos = (ring->tail + SIZE_METADATA_BYTE_LEN) % ring->size;
+    first = min(packet_length, ring->size - pos);
+    memcpy(buf, ring->buf + pos, first);
+    memcpy(buf + first, ring->buf, packet_length - first);
+    ring->tail += packet_length + SIZE_METADATA_BYTE_LEN;
+    copied += packet_length;
   }
-  read_size = min(len, available);
-  pos = ring->tail % ring->size + SIZE_METADATA_BYTE_LEN;
-  first = min(read_size, ring->size - pos);
-  memcpy(buf, ring->buf + pos, first);
-  memcpy(buf + first, ring->buf, read_size - first);
-  ring->tail += read_size + SIZE_METADATA_BYTE_LEN;
-  return read_size;
+  return copied;
 };
 
 void ring_reset(struct ring *ring) {
   ring->head = 0;
   ring->tail = 0;
   ring->overflow_count = 0;
+  ring->dropped_bytes = 0;
 };

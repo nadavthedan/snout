@@ -10,7 +10,7 @@ MODULE_DESCRIPTION("A packet sniffer kernel module");
 int ring_size = 1 << 20;
 module_param(ring_size, int, 0);
 
-int snaplen = 65535;
+int snaplen = 65535 - sizeof(struct pcap_packet_hdr) - SIZE_METADATA_BYTE_LEN;
 module_param(snaplen, int, 0);
 
 static u8 *snout_stage;
@@ -223,7 +223,8 @@ static int __init snout_init(void) {
     pr_err("snout: ring_size %d too small (min 4096)\n", ring_size);
     return -EINVAL;
   }
-  if (snaplen < 0 || snaplen > 65535) {
+  if (snaplen < 0 || snaplen > 65535 - sizeof(struct pcap_packet_hdr) -
+                                   SIZE_METADATA_BYTE_LEN) {
     pr_err("snout: snaplen %d out of range\n", snaplen);
     return -EINVAL;
   }
