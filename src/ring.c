@@ -105,8 +105,8 @@ size_t ring_read(struct ring *ring, u8 *buf, size_t len) {
     }
     pos = (ring->tail + SIZE_METADATA_BYTE_LEN) % ring->size;
     first = min(packet_length, ring->size - pos);
-    memcpy(buf, ring->buf + pos, first);
-    memcpy(buf + first, ring->buf, packet_length - first);
+    memcpy(buf + copied, ring->buf + pos, first);
+    memcpy(buf + copied + first, ring->buf, packet_length - first);
     ring->tail += packet_length + SIZE_METADATA_BYTE_LEN;
     copied += packet_length;
   }
