@@ -24,6 +24,7 @@
 #include <linux/types.h>
 #include <linux/udp.h>
 #include <linux/version.h>
+#include <net/net_namespace.h>
 
 struct pcap_global_hdr {
   __le32 magic_number;

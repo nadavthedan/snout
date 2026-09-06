@@ -20,8 +20,10 @@ static struct ring *snout_ring;
 static struct snout_stats snout_stats;
 static struct pcap_global_hdr global_hdr;
 static struct snout_filter snout_filter = {0};
-static struct packet_type snout_pt = {
-    .dev = NULL, .type = htons(ETH_P_ALL), .func = snout_dev_add_pack_callback};
+static struct packet_type snout_pt = {.dev = NULL,
+                                      .af_packet_net = &init_net,
+                                      .type = htons(ETH_P_ALL),
+                                      .func = snout_dev_add_pack_callback};
 static struct class *cls;
 static int major;
 
@@ -116,7 +118,6 @@ ssize_t snout_read(struct file *flip, char __user *buffer, size_t length,
     return 0;
   }
 
-  ssize_t bytes_read = 0;
   struct snout_file_ctx *ctx = flip->private_data;
   if (!ctx->hdr_sent) {
     if (length < sizeof(global_hdr)) {
@@ -126,36 +127,31 @@ ssize_t snout_read(struct file *flip, char __user *buffer, size_t length,
       return -EFAULT;
     }
     ctx->hdr_sent = true;
-    bytes_read += sizeof(global_hdr);
+    return sizeof(global_hdr);
   }
-  while (length - bytes_read > 0) {
-    int bytes_to_read = min_t(size_t, snaplen, length - bytes_read);
-    spin_lock_bh(&snout_ring->lock);
-    if (ring_available(snout_ring) == 0) {
-      spin_unlock_bh(&snout_ring->lock);
-      if (bytes_read > 0) {
-        break;
-      }
-      if (flip->f_flags & O_NONBLOCK) {
-        return -EAGAIN;
-      }
-      if (wait_event_interruptible(snout_ring->wait,
-                                   ring_available(snout_ring) > 0)) {
-        return -ERESTARTSYS;
-      }
-      continue;
-    }
-    size_t len = ring_read(snout_ring, snout_rbuf, bytes_to_read);
+  int bytes_to_read =
+      min_t(size_t, snaplen + sizeof(struct pcap_packet_hdr), length);
+  spin_lock_bh(&snout_ring->lock);
+  if (ring_available(snout_ring) == 0) {
     spin_unlock_bh(&snout_ring->lock);
-    if (copy_to_user(buffer + bytes_read, snout_rbuf, len)) {
-      if (bytes_read > 0) {
-        return bytes_read;
-      }
-      return -EFAULT;
+    if (flip->f_flags & O_NONBLOCK) {
+      return -EAGAIN;
     }
-    bytes_read += len;
+    if (wait_event_interruptible(snout_ring->wait,
+                                 ring_available(snout_ring) > 0)) {
+      return -ERESTARTSYS;
+    }
+    spin_lock_bh(&snout_ring->lock);
   }
-  return bytes_read;
+  size_t len = ring_read(snout_ring, snout_rbuf, bytes_to_read);
+  spin_unlock_bh(&snout_ring->lock);
+  if (len == 0) {
+    return -EINVAL;
+  }
+  if (copy_to_user(buffer, snout_rbuf, len)) {
+    return -EFAULT;
+  }
+  return len;
 }
 
 __poll_t snout_poll(struct file *flip, struct poll_table_struct *poll_table) {
@@ -266,7 +262,7 @@ static int __init snout_init(void) {
     return -ENOMEM;
   }
 
-  snout_rbuf = kzalloc(snaplen, GFP_KERNEL);
+  snout_rbuf = kzalloc(snaplen + sizeof(struct pcap_packet_hdr), GFP_KERNEL);
   if (!snout_rbuf) {
     ring_destroy(snout_ring);
     kfree(snout_stage);
